@@ -27,12 +27,21 @@ func main() {
 	// コマンドライン引数を処理
 	url := flag.String("url", "", "対象ウェブサイトのURL (例: example.com)")
 	limit := flag.Int("limit", 10, "取得するスナップショットの最大数")
+	sortOrder := flag.String("sort", "", "並び替え順序: closest (最近のものを優先), reverse (最新から古い順)")
+	fromDate := flag.String("from", "", "開始日 (YYYYMMDD形式、例: 20200101)")
+	toDate := flag.String("to", "", "終了日 (YYYYMMDD形式、例: 20221231)")
+	showLatest := flag.Bool("latest", false, "最新のスナップショットを優先的に取得する (sortパラメータにclosestを設定)")
 	flag.Parse()
 
 	if *url == "" {
 		fmt.Println("エラー: URLを指定してください (-url フラグを使用)")
 		fmt.Println("使用例: go run main.go -url example.com")
 		os.Exit(1)
+	}
+
+	// 最新優先フラグが指定されている場合、sortパラメータを上書き
+	if *showLatest && *sortOrder == "" {
+		*sortOrder = "closest"
 	}
 
 	// URLからプロトコル部分を削除
@@ -44,7 +53,7 @@ func main() {
 	fmt.Printf("%sの履歴を検索中...\n", cleanURL)
 
 	// CDX APIからスナップショットのリストを取得
-	snapshots, err := getSnapshots(cleanURL, *limit)
+	snapshots, err := getSnapshots(cleanURL, *limit, *sortOrder, *fromDate, *toDate)
 	if err != nil {
 		fmt.Printf("エラー: %v\n", err)
 		os.Exit(1)
@@ -84,9 +93,22 @@ func main() {
 }
 
 // getSnapshots は指定されたURLのスナップショットを取得する
-func getSnapshots(url string, limit int) ([]Snapshot, error) {
+func getSnapshots(url string, limit int, sortOrder, fromDate, toDate string) ([]Snapshot, error) {
 	// CDX APIのURL
 	apiURL := fmt.Sprintf("http://web.archive.org/cdx/search/cdx?url=%s&output=json&limit=%d", url, limit)
+
+	// 並び替えオプションを追加
+	if sortOrder != "" {
+		apiURL += fmt.Sprintf("&sort=%s", sortOrder)
+	}
+
+	// 日付範囲を追加
+	if fromDate != "" {
+		apiURL += fmt.Sprintf("&from=%s", fromDate)
+	}
+	if toDate != "" {
+		apiURL += fmt.Sprintf("&to=%s", toDate)
+	}
 
 	// HTTPリクエストを送信
 	resp, err := http.Get(apiURL)
