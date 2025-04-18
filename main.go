@@ -8,8 +8,12 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 )
 
 // CDXResponse は CDX API からのレスポンスを表す構造体
@@ -22,6 +26,7 @@ type Snapshot struct {
 	MimeType  string
 	Status    string
 	Digest    string
+	ImagePath string // スクリーンショットの保存パス
 }
 
 func main() {
@@ -36,6 +41,8 @@ func main() {
 	numYears := flag.Int("num-years", 0, "取得する年数 (yearlyオプションと共に使用。0の場合は現在まで全て取得)")
 	interval := flag.Int("interval", 1, "yearly指定時のスナップショット取得間隔（年単位、デフォルト: 1）")
 	verbose := flag.Bool("verbose", false, "詳細なログを出力する")
+	screenshot := flag.Bool("screenshot", false, "スナップショットのスクリーンショットを取得して保存する")
+	imgDir := flag.String("img-dir", "images", "スクリーンショットを保存するディレクトリ")
 	flag.Parse()
 
 	if *url == "" {
@@ -89,6 +96,17 @@ func main() {
 		return
 	}
 
+	// スクリーンショットの取得
+	if *screenshot {
+		// スクリーンショット保存ディレクトリを作成
+		if err := os.MkdirAll(*imgDir, 0755); err != nil {
+			fmt.Printf("警告: スクリーンショット保存ディレクトリの作成に失敗しました: %v\n", err)
+		} else {
+			fmt.Printf("スクリーンショットを取得中...\n")
+			snapshots = captureScreenshots(snapshots, *imgDir, *verbose)
+		}
+	}
+
 	// 結果を表示
 	fmt.Printf("%d個のスナップショットが見つかりました:\n\n", len(snapshots))
 
@@ -112,9 +130,104 @@ func main() {
 
 		// まず基本情報を表示
 		fmt.Printf("%-20s %-10s %-20s\n", dateStr, status, snap.MimeType)
-		// URLは別行に表示
-		fmt.Printf("  %s\n\n", snap.URL)
+		// URLを表示
+		fmt.Printf("  %s\n", snap.URL)
+
+		// スクリーンショットのパスがあれば表示
+		if snap.ImagePath != "" {
+			absPath, _ := filepath.Abs(snap.ImagePath)
+			fmt.Printf("  スクリーンショット: %s\n", absPath)
+		}
+		fmt.Println()
 	}
+}
+
+// captureScreenshots は指定されたスナップショットのスクリーンショットを撮影する
+func captureScreenshots(snapshots []Snapshot, imgDir string, verbose bool) []Snapshot {
+	// ブラウザを起動
+	browser := rod.New().MustConnect()
+	defer browser.MustClose()
+
+	for i := range snapshots {
+		// スクリーンショットのファイル名を作成
+		imgPath := filepath.Join(imgDir, fmt.Sprintf("%s_%s.png",
+			snapshots[i].Timestamp,
+			strings.ReplaceAll(snapshots[i].Status, " ", "_")))
+
+		// ファイルが既に存在する場合はスキップ
+		if _, err := os.Stat(imgPath); err == nil {
+			if verbose {
+				fmt.Printf("スクリーンショットが既に存在します: %s\n", imgPath)
+			}
+			snapshots[i].ImagePath = imgPath
+			continue
+		}
+
+		if verbose {
+			fmt.Printf("スクリーンショットを取得中: %s\n", snapshots[i].URL)
+		}
+
+		// 新しいページを開く
+		page := browser.MustPage("")
+
+		// タイムアウトを設定（30秒）
+		page = page.Timeout(30 * time.Second)
+
+		// エラーをキャッチ
+		var screenshotErr error
+
+		// ナビゲーションのエラーをキャッチ
+		err := rod.Try(func() {
+			// ページにナビゲート
+			page.MustNavigate(snapshots[i].URL)
+
+			// ページの読み込みを待つ（最大10秒）
+			page.MustWaitLoad()
+
+			// スクリーンショットを撮影
+			img, err := page.Screenshot(false, &proto.PageCaptureScreenshot{
+				Format:  proto.PageCaptureScreenshotFormatPng,
+				Quality: nil, // クオリティをnilに設定（PNGではクオリティは不要）
+				Clip: &proto.PageViewport{
+					X:      0,
+					Y:      0,
+					Width:  1280,
+					Height: 800,
+					Scale:  1,
+				},
+			})
+			if err != nil {
+				screenshotErr = err
+				return
+			}
+
+			// ファイルに保存
+			if err := os.WriteFile(imgPath, img, 0644); err != nil {
+				screenshotErr = err
+				return
+			}
+
+			// スクリーンショットが成功したことを記録
+			snapshots[i].ImagePath = imgPath
+		})
+
+		// エラーがあれば表示
+		if err != nil || screenshotErr != nil {
+			actualErr := err
+			if screenshotErr != nil {
+				actualErr = screenshotErr
+			}
+			fmt.Printf("警告: スクリーンショット取得に失敗しました: %v\n", actualErr)
+		}
+
+		// ページを閉じる
+		page.MustClose()
+
+		// 少し待機してブラウザに負荷をかけすぎないようにする
+		time.Sleep(1 * time.Second)
+	}
+
+	return snapshots
 }
 
 // getPeriodicSnapshots は最古から指定間隔ごとのスナップショットを取得する
