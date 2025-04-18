@@ -35,6 +35,7 @@ func main() {
 	yearlySnapshots := flag.Bool("yearly", false, "最古から一定間隔ごとのスナップショットを取得する")
 	numYears := flag.Int("num-years", 0, "取得する年数 (yearlyオプションと共に使用。0の場合は現在まで全て取得)")
 	interval := flag.Int("interval", 1, "yearly指定時のスナップショット取得間隔（年単位、デフォルト: 1）")
+	verbose := flag.Bool("verbose", false, "詳細なログを出力する")
 	flag.Parse()
 
 	if *url == "" {
@@ -54,6 +55,14 @@ func main() {
 	cleanURL = strings.TrimPrefix(cleanURL, "https://")
 	cleanURL = strings.TrimSuffix(cleanURL, "/")
 
+	// URLに余計なクエリパラメータがある場合は削除
+	if idx := strings.Index(cleanURL, "?"); idx > 0 {
+		cleanURL = cleanURL[:idx]
+	}
+
+	if *verbose {
+		fmt.Printf("処理対象URL: %s\n", cleanURL)
+	}
 	fmt.Printf("%sの履歴を検索中...\n", cleanURL)
 
 	var snapshots []Snapshot
@@ -61,14 +70,14 @@ func main() {
 
 	// 1年ごとのスナップショットを取得する場合
 	if *yearlySnapshots {
-		snapshots, err = getPeriodicSnapshots(cleanURL, *numYears, *interval)
+		snapshots, err = getPeriodicSnapshots(*url, *numYears, *interval, *verbose)
 		if err != nil {
 			fmt.Printf("エラー: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
 		// 通常のスナップショット取得
-		snapshots, err = getSnapshots(cleanURL, *limit, *sortOrder, *fromDate, *toDate)
+		snapshots, err = getSnapshots(*url, *limit, *sortOrder, *fromDate, *toDate)
 		if err != nil {
 			fmt.Printf("エラー: %v\n", err)
 			os.Exit(1)
@@ -109,13 +118,16 @@ func main() {
 }
 
 // getPeriodicSnapshots は最古から指定間隔ごとのスナップショットを取得する
-func getPeriodicSnapshots(url string, numYears, yearInterval int) ([]Snapshot, error) {
+func getPeriodicSnapshots(url string, numYears, yearInterval int, verbose bool) ([]Snapshot, error) {
 	if yearInterval <= 0 {
 		yearInterval = 1 // デフォルトは1年間隔
 	}
 
 	// まず対象URLの全てのスナップショットを取得
 	// 件数を大きくして可能な限り多くのスナップショットを取得
+	if verbose {
+		fmt.Println("全てのスナップショットを取得中...")
+	}
 	allSnapshots, err := getSnapshots(url, 5000, "", "", "")
 	if err != nil {
 		return nil, fmt.Errorf("スナップショット取得失敗: %v", err)
@@ -151,12 +163,17 @@ func getPeriodicSnapshots(url string, numYears, yearInterval int) ([]Snapshot, e
 	// もし検索結果が少なくて最近のスナップショットがない場合は、
 	// 逆順でも追加で検索して最新のスナップショットを取得
 	if newestTime.Year() < time.Now().Year()-2 {
+		if verbose {
+			fmt.Println("最新のスナップショットを追加取得中...")
+		}
 		recentSnapshots, err := getSnapshots(url, 100, "reverse", "", "")
 		if err == nil && len(recentSnapshots) > 0 {
 			allSnapshots = append(allSnapshots, recentSnapshots...)
 			// 最新のスナップショット時刻を更新
 			newestSnapshot = recentSnapshots[0]
 			newestTime, _ = time.Parse("20060102150405", newestSnapshot.Timestamp)
+		} else if verbose && err != nil {
+			fmt.Printf("最新スナップショット取得中にエラー発生: %v\n", err)
 		}
 	}
 
@@ -175,6 +192,10 @@ func getPeriodicSnapshots(url string, numYears, yearInterval int) ([]Snapshot, e
 
 		// この年の日付を生成（最古のスナップショットと同じ月日を使用）
 		targetDate := time.Date(year, oldestTime.Month(), oldestTime.Day(), 0, 0, 0, 0, time.UTC)
+
+		if verbose {
+			fmt.Printf("%d年のスナップショットを検索中...\n", year)
+		}
 
 		// 目標日付に最も近いスナップショットを探す
 		var closestSnapshot *Snapshot
@@ -210,7 +231,16 @@ func getPeriodicSnapshots(url string, numYears, yearInterval int) ([]Snapshot, e
 			if !isDuplicate {
 				result = append(result, *closestSnapshot)
 				yearCount++
+				if verbose {
+					t, _ := time.Parse("20060102150405", closestSnapshot.Timestamp)
+					fmt.Printf("  %d年に最も近いスナップショット: %s（差: %.1f日）\n",
+						year, t.Format("2006-01-02"), closestDiff)
+				}
+			} else if verbose {
+				fmt.Printf("  %d年のスナップショットは重複のためスキップ\n", year)
 			}
+		} else if verbose {
+			fmt.Printf("  %d年のスナップショットは見つかりませんでした\n", year)
 		}
 	}
 
@@ -219,8 +249,15 @@ func getPeriodicSnapshots(url string, numYears, yearInterval int) ([]Snapshot, e
 
 // getSnapshots は指定されたURLのスナップショットを取得する
 func getSnapshots(url string, limit int, sortOrder, fromDate, toDate string) ([]Snapshot, error) {
+	// URLをエスケープ
+	escapedURL := url
+
+	// プロトコルプレフィックスを削除（http://やhttps://）
+	escapedURL = strings.TrimPrefix(escapedURL, "http://")
+	escapedURL = strings.TrimPrefix(escapedURL, "https://")
+
 	// CDX APIのURL
-	apiURL := fmt.Sprintf("http://web.archive.org/cdx/search/cdx?url=%s&output=json&limit=%d", url, limit)
+	apiURL := fmt.Sprintf("http://web.archive.org/cdx/search/cdx?url=%s&output=json&limit=%d", escapedURL, limit)
 
 	// 並び替えオプションを追加
 	if sortOrder != "" {
@@ -242,10 +279,25 @@ func getSnapshots(url string, limit int, sortOrder, fromDate, toDate string) ([]
 	}
 	defer resp.Body.Close()
 
+	// ステータスコードチェック
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("APIからエラーレスポンス: ステータスコード %d", resp.StatusCode)
+	}
+
 	// レスポンスを読み込む
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("レスポンス読み込み失敗: %v", err)
+	}
+
+	// レスポンスの最初の数バイトをチェックして、JSONかどうか確認
+	if len(body) > 0 && body[0] != '[' {
+		// デバッグ用に最初の100バイトを出力（もし短ければその全体）
+		preview := body
+		if len(preview) > 100 {
+			preview = preview[:100]
+		}
+		return nil, fmt.Errorf("JSONではないレスポンスを受信: %s", string(preview))
 	}
 
 	// JSONをパース
