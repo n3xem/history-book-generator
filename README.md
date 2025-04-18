@@ -9,6 +9,7 @@
 - アーカイブされたページへの直接リンクを提供
 - 最新のスナップショットを優先的に取得するオプション
 - 日付範囲指定による検索の絞り込み
+- 最古から一定間隔ごとのスナップショットを自動取得する機能
 
 ## 使い方
 
@@ -40,6 +41,9 @@ go run main.go -url example.com
   - `reverse`: 最新から古い順
 - `-from`: 検索開始日（YYYYMMDD形式、例: 20200101）
 - `-to`: 検索終了日（YYYYMMDD形式、例: 20221231）
+- `-yearly`: 最古から一定間隔ごとのスナップショットを取得する
+- `-interval`: 取得する間隔（年単位、デフォルト: 1）
+- `-num-years`: 取得する年数（yearlyオプションと共に使用。0の場合は現在まで全て取得）
 
 ### 使用例
 
@@ -58,6 +62,15 @@ go run main.go -url github.com -from 20200101
 
 # 2020年から2022年までのスナップショットを逆順（新しい順）で表示
 go run main.go -url twitter.com -from 20200101 -to 20221231 -sort reverse
+
+# 最古から1年ごとのスナップショットを取得
+go run main.go -url google.com -yearly
+
+# 最古から5年分の1年ごとのスナップショットを取得
+go run main.go -url yahoo.com -yearly -num-years 5
+
+# 最古から5年ごとのスナップショットを取得
+go run main.go -url yahoo.com -yearly -interval 5
 ```
 
 ## 技術的詳細
@@ -75,6 +88,15 @@ go run main.go -url twitter.com -from 20200101 -to 20221231 -sort reverse
   - `reverse`: 最新から古い順（timestamp降順）
 - `from`: 検索開始日（YYYYMMDD形式）
 - `to`: 検索終了日（YYYYMMDD形式）
+
+### 定期的なスナップショット取得アルゴリズム
+
+一定間隔ごとのスナップショット取得機能（`-yearly`フラグ）では、以下のアルゴリズムを使用しています：
+
+1. まず対象URLの全てのスナップショットを取得（最大5000件）
+2. 最古のスナップショットを特定し、その日付から指定された間隔（デフォルト: 1年）ごとに進む
+3. 各時点で最も近い日付のスナップショットを選択
+4. 現在日付まで（または指定された年数まで）指定間隔ごとにスナップショットを取得
 
 CDX APIの詳細については、[Internet Archive CDX Server API](https://archive.org/developers/tutorial-compare-snapshot-wayback.html)のドキュメントを参照してください。
 # history-book-generator
